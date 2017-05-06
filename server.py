@@ -88,7 +88,7 @@ def api_send():
         return "0"
     # find the auth pair of the desired sender
     users = util.get_collection("users", db=util.config["auth_db"])
-    sender = users.find_one({"username": request['sender']});
+    sender = users.find_one({"username": request['sender']})
     sender_pair = False
     for auth in request['auths']:
       if auth[0] == str(sender["_id"]):
@@ -281,7 +281,7 @@ def disconnect():
     query: 
 }
 """
-# subscribes a user to a request
+# Adds a new subscription to a socket
 @socket.on("request", namespace="/atsui")
 def request_handler(data):
     request_data = json.loads(data)
@@ -289,18 +289,20 @@ def request_handler(data):
         emit("log", "Missing Arguments")
         return "0"
     # check all authentications
-    users = util.get_collection('users', db=util.config['auth_db'])
-    auths = util.escape_user_query(request_data['auths'])
+    users = adb.get_collection('users',  db=util.config['auth_db'])
+    auths = adb.escape_user_query(request_data['auths'])
+    # iterate supplied auths and emit if any of them fail
     for pair in auths:
-        if not util.auth(pair[0], pair[1]):
+        if not adb.auth(pair[0], pair[1]):
             emit("log", "A supplied username was not found")
             return "0"
+    # escape the where clause
     if "where" in request_data:
-        request_data['where'] = util.escape_user_query(request_data['where'])
+        request_data['where'] = atsui.escape_user_query(request_data['where'])
     # send the user backlogs if requested
     if "backlog" in request_data and request_data["backlog"]:
         # get previously sent documents
-        backlog = util.get_documents(
+        backlog = adb.get_documents(
             request_data['auths'],
             request_data["collection"],
             time_order=True,
@@ -321,13 +323,34 @@ def request_handler(data):
                 emit("data", document_tidy)
     # add socket to dict of sockets to keep updated
     # (Choosing speed over memory here)
-    # create a socket object to represent us
+    # create a socket object to represent this connection
     socket = Socket(request.sid, request_data)
     # add us to a list of all requester sockets
     if not request_data["collection"] in live_sockets:
         live_sockets[request_data["collection"]] = []
     live_sockets[request_data["collection"]].append(socket)
     all_sockets[socket.sid] = socket
+
+# Emits document to all sockets subscibed to request
+def emit_to_relevant_sockets(self, request, document, live_sockets):
+    # skip if there are obviously no listeners
+    if not request['collection'] in live_sockets\
+            or len(live_sockets[request['collection']]) < 1:
+        return True
+    # for each listener in this collection
+    for socket in live_sockets[request['collection']]:
+        # remove disconnected sockets
+        if not socket.connected:
+            live_sockets[request['collection']].remove(socket)
+            continue
+        # if the listener is authenticated as the sender or the recipient
+        if mongoquery.Query({"$or": [{"sender": {"$in": socket.ids}},
+                                     {"recipient": {"$in": socket.ids}}
+                ]}).match(document):
+            # check user defined query
+            if mongoquery.Query(socket.where).match(document):
+                # document matches this users specifications. Send document
+                socket.emit("data", document)
     
 # Object that represents a socket connection
 class Socket:
