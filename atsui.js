@@ -1,13 +1,15 @@
 // rtm wrapper
 function RTM(collection, url, _debug) {
-  this.url = url || 'http://' + document.location.host + '/component';
+  this.uri = url || document.location.host;
+  this.socket_url = "http://" + this.uri + "/socket";
+  this.ajax_url = "http://" + this.uri + "/api/1/";
   this.collection = collection;
   this.debug = true ? _debug : false;
   // This is just sha512(''). Don't trip, yo.
   this.blank_sha512 =
     'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce' +
     '47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e';
-  
+
   // creates a new connection to the database
   this.new_connection = function () {
     if (typeof this.ws != "undefined"){
@@ -56,17 +58,19 @@ function RTM(collection, url, _debug) {
 
   // sends data to the target collection
   this.send = function(data, sender, recipient){
-    // use an already created non-blocking connection if available
-    if (typeof this.send_con == "undefined"){
-      this.send_con = this.new_connection();
-    }
-    this.send_con.emit('send', JSON.stringify({
-      collection: this.collection,
-      sender: typeof sender != "undefined" ? sender : $.Cookie('username'),
-      auths: this.get_auth(),
-      recipient: typeof recipient != "undefined" ? recipient : "Public",
-      data: data
-    }));
+    $.post(
+      this.ajax_url + "send", {data: JSON.stringify({
+        collection: this.collection,
+        sender: typeof sender != "undefined" ? sender : $.Cookie('username'),
+        auths: this.get_auth(),
+        recipient: typeof recipient != "undefined" ? recipient : "Public",
+        data: data
+      })},
+      function(data){
+        // success
+        return true;
+      }
+    );
   }
 
   // updates target document with data
@@ -82,7 +86,7 @@ function RTM(collection, url, _debug) {
       document_id: document_id
     }));
   }
-    
+
   this.keys_exist = function(key_list, obj){
     for (var i in key_list){
       var key = key_list[i];
@@ -92,7 +96,7 @@ function RTM(collection, url, _debug) {
     }
     return true;
   }
-  
+
   // gets all datachests the user is authenticated to see
   this.get_auth = function(){
     var auth = [[{"$uid_of": "Public"}, this.blank_sha512]];

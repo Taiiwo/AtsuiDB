@@ -6,12 +6,14 @@ import json
 from flask import request, jsonify, Flask, make_response
 from flask_socketio import SocketIO, emit, send
 from bson.objectid import ObjectId
+from flask_cors import CORS
 
 import atsuidb.atsuidb
 import atsuidb.errors
 
 app = Flask(__name__)
 socket = SocketIO(app)
+CORS(app)
 adb = atsuidb.atsuidb.AtsuiDB()
 
 # Returns a flask success response
@@ -78,44 +80,25 @@ def api_authenticate():
 # API method for sending documents
 @app.route("/api/1/send", methods=["POST"])
 def api_send():
-    request = json.loads(data)
-    print(request)
     # validate request
-    if not util.keys_exist(
+    request_data = json.loads(request.form["data"])
+    print(request_data)
+    if not adb.keys_exist(
             ["sender", "recipient", "auths", "collection", "data"],
-            request):
-        emit("log", "Missing Arguments")
-        return "0"
-    # find the auth pair of the desired sender
-    users = util.get_collection("users", db=util.config["auth_db"])
-    sender = users.find_one({"username": request['sender']})
-    sender_pair = False
-    for auth in request['auths']:
-      if auth[0] == str(sender["_id"]):
-        sender_pair = auth
-    if not sender_pair:
-        emit("log", "Sender authentication not found")
-        return "0"
-    # authenticate sender
-    sender = util.auth(sender_pair[0], sender_pair[1])
-    if not sender:
-        emit("log", "Failed to authenticate sender")
-        return "0"
-    # find recipient
-    recipient = users.find_one({"username": request['recipient']})
-    if not recipient:
-        emit("log", "Recipient username does not exist")
-        return False
-    # store document
-    document = util.send(request['data'], str(sender["_id"]),
-                         str(recipient["_id"]), request['collection'])
+            request_data):
+        raise atsuidb.errors.DataRequired()
+    # attempt to send data
+    print(request_data["auths"])
+    document = adb.send(
+        request_data["data"],
+        request_data["collection"],
+        request_data["sender"],
+        request_data["recipient"],
+        request_data["auths"]
+    )
     if not document:
-        emit('log', make_error(
-            'unknown_error',
-            "Data was not added to the DB for some reason"
-        ))
-        return "0"
-    # send Updates
+        raise atsuidb.errors.DataRequired()
+    # Now update all the listeners
     document_tidy = {
         "sender": document["sender"],
         "recipient": document["recipient"],
@@ -124,8 +107,8 @@ def api_send():
         "ts": document["ts"],
         "update": False
     }
-    util.emit_to_relevant_sockets(request, document, live_sockets)
-    emit("log", "Data was sent")
+    emit_to_relevant_sockets(request, document_tidy, live_sockets)
+    return "Data was sent"
 
 # API method for updating documents
 @app.route("/api/1/update", methods=["POST"])
@@ -173,7 +156,7 @@ def api_update(data):
         "ts": document["ts"],
         "update": True
     }
-    util.emit_to_relevant_sockets(request, document, live_sockets)
+    util.emit_to_relevant_sockets(request, document)
     emit("log", "Data was updated")
 
 @app.route("/api/1/change_password", methods=["POST"])
@@ -278,7 +261,7 @@ def disconnect():
 """ query structure:
 {
     collection: str,
-    query: 
+    query:
 }
 """
 # Adds a new subscription to a socket
@@ -332,7 +315,7 @@ def request_handler(data):
     all_sockets[socket.sid] = socket
 
 # Emits document to all sockets subscibed to request
-def emit_to_relevant_sockets(self, request, document, live_sockets):
+def emit_to_relevant_sockets(self, request, document):
     # skip if there are obviously no listeners
     if not request['collection'] in live_sockets\
             or len(live_sockets[request['collection']]) < 1:
@@ -351,7 +334,7 @@ def emit_to_relevant_sockets(self, request, document, live_sockets):
             if mongoquery.Query(socket.where).match(document):
                 # document matches this users specifications. Send document
                 socket.emit("data", document)
-    
+
 # Object that represents a socket connection
 class Socket:
     def __init__(self, sid, query):

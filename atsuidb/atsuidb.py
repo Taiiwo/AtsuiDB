@@ -17,8 +17,10 @@ class AtsuiDB:
     def __init__(self):
         # creat a persistent DB connection
         self.mongo = pymongo.MongoClient()
+        if not self.mongo:
+            raise Exception("database connection refused")
         self.users = self.mongo["atsui_meta"].users
-    
+
     # Inserts a new user to the DB
     def register(self, username, password, details={}):
         # check if user exists
@@ -44,7 +46,7 @@ class AtsuiDB:
         # insert the user into the database
         self.users.insert_one(user_data)
         return user_data
-    
+
     # Logs a user in, creating a new session token and salt
     def login(self, username, password):
         # find the user
@@ -63,7 +65,36 @@ class AtsuiDB:
             "user_data": safe_user_data,
             "user_id": str(user_data["_id"])
         }
-    
+
+    # Sends a message
+    def send(self, data, collection, sender, recipient, auths):
+        print(1)
+        # find the auth pair of the desired sender
+        sender = self.users.find_one({"username": sender})
+        sender_pair = False
+        # search for it in the supplied auths
+        for auth in request['auths']:
+          if auth[0] == str(sender["_id"]):
+            sender_pair = auth
+        # if no authentication was found, disregard
+        if not sender_pair:
+            raise errors.LoginRequired()
+        print(2)
+        # authenticate sender
+        sender = util.auth(sender_pair[0], sender_pair[1])
+        if not sender:# this should never happen
+            raise errors.LoginRequired()
+        print(3)
+
+        # find recipient
+        recipient = users.find_one({"username": recipient})
+        if not recipient:
+            raise errors.DataRequired()
+        print(4)
+
+        # store document
+        return mongo["atsui"][collection].insert_one(data)
+
     # Creates a session token for a given user
     def create_session(self, user_data):
         # create a salt so the same session key is only valid once
@@ -141,3 +172,9 @@ class AtsuiDB:
                 user_data["password_hash"], user_data["session_salt"]):
             return None
         return user_data
+
+    def keys_exist(self, keys, dicti):
+        for key in keys:
+            if key not in dicti:
+                return False
+        return True
