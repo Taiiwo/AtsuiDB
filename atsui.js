@@ -5,10 +5,10 @@ function RTM(collection, url, _debug) {
   this.ajax_url = "http://" + this.uri + "/api/1/";
   this.collection = collection;
   this.debug = true ? _debug : false;
-  // This is just sha512(''). Don't trip, yo.
+  // This is just sha512(sha512("")). Don't trip, yo.
   this.blank_sha512 =
-    'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce' +
-    '47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e';
+    '8fb29448faee18b656030e8f5a8b9e9a695900f36a3b7d7ebb0d9d51e06c8569' +
+    'd81a55e39b481cf50546d697e7bde1715aa6badede8ddc801c739777be77f166';
 
   // creates a new connection to the database
   this.new_connection = function () {
@@ -99,10 +99,13 @@ function RTM(collection, url, _debug) {
 
   // gets all datachests the user is authenticated to see
   this.get_auth = function(){
-    var auth = [[{"$uid_of": "Public"}, this.blank_sha512]];
     if (typeof user_data != "undefined"){
-      auth = auth.concat(user_data.datachests);
+      var auths = user_data.auths;
     }
-    return auth;
+    else {
+      // if the user is not logged in, create a set of public auths
+      var auths = [[{"$uid_of": "#Public"}, this.blank_sha512]];
+    }
+    return auths;
   }
 }

@@ -82,13 +82,11 @@ def api_authenticate():
 def api_send():
     # validate request
     request_data = json.loads(request.form["data"])
-    print(request_data)
     if not adb.keys_exist(
             ["sender", "recipient", "auths", "collection", "data"],
             request_data):
         raise atsuidb.errors.DataRequired()
-    # attempt to send data
-    print(request_data["auths"])
+    # attempt to send document
     document = adb.send(
         request_data["data"],
         request_data["collection"],
@@ -104,11 +102,10 @@ def api_send():
         "recipient": document["recipient"],
         "data": document["data"],
         "id": str(document["_id"]),
-        "ts": document["ts"],
         "update": False
     }
-    emit_to_relevant_sockets(request, document_tidy, live_sockets)
-    return "Data was sent"
+    emit_to_relevant_sockets(request_data, document_tidy)
+    return make_response("success")
 
 # API method for updating documents
 @app.route("/api/1/update", methods=["POST"])
@@ -315,16 +312,16 @@ def request_handler(data):
     all_sockets[socket.sid] = socket
 
 # Emits document to all sockets subscibed to request
-def emit_to_relevant_sockets(self, request, document):
+def emit_to_relevant_sockets(request_data, document):
     # skip if there are obviously no listeners
-    if not request['collection'] in live_sockets\
-            or len(live_sockets[request['collection']]) < 1:
+    if not request_data['collection'] in live_sockets\
+            or len(live_sockets[request_data['collection']]) < 1:
         return True
     # for each listener in this collection
-    for socket in live_sockets[request['collection']]:
+    for socket in live_sockets[request_data['collection']]:
         # remove disconnected sockets
         if not socket.connected:
-            live_sockets[request['collection']].remove(socket)
+            live_sockets[request_data['collection']].remove(socket)
             continue
         # if the listener is authenticated as the sender or the recipient
         if mongoquery.Query({"$or": [{"sender": {"$in": socket.ids}},
