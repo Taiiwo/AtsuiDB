@@ -2,7 +2,6 @@ import os
 import re
 import time
 import json
-
 from flask import request, jsonify, Flask
 
 from binascii import b2a_hex, a2b_hex
@@ -336,7 +335,7 @@ def disconnect():
 """ query structure:
 {
     collection: str,
-    query: 
+    query:
 }
 """
 # subscribes a user to a request

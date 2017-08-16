@@ -7,14 +7,14 @@ from flask import request, jsonify, Flask, make_response
 from flask_socketio import SocketIO, emit, send
 from bson.objectid import ObjectId
 from flask_cors import CORS
+import mongoquery
 
-import atsuidb.atsuidb
-import atsuidb.errors
+from . import atsuidb, errors
 
 app = Flask(__name__)
-socket = SocketIO(app)
+socketio = SocketIO(app)
 CORS(app)
-adb = atsuidb.atsuidb.AtsuiDB()
+adb = atsuidb.AtsuiDB()
 
 # Returns a flask success response
 def make_success_response(extra={}):
@@ -105,7 +105,7 @@ def api_send():
         "update": False
     }
     emit_to_relevant_sockets(request_data, document_tidy)
-    return make_response("success")
+    return make_success_response()
 
 # API method for updating documents
 @app.route("/api/1/update", methods=["POST"])
@@ -246,61 +246,40 @@ def update_user():
 
 
 # runs when a socket disconnects
-@socket.on("disconnect", namespace="/atsui")
+@socketio.on("disconnect", namespace="/atsui")
 def disconnect():
-    print(len(all_sockets))
     # if socket is requesting
     if request.sid in all_sockets:
         # remove from requesters
         all_sockets[request.sid].connected = False
         del all_sockets[request.sid]
 
-""" query structure:
-{
-    collection: str,
-    query:
-}
-"""
 # Adds a new subscription to a socket
-@socket.on("request", namespace="/atsui")
-def request_handler(data):
+@socketio.on("listen", namespace="/socket")
+def listen_handler(data):
     request_data = json.loads(data)
-    if not util.keys_exist(["collection", "auths"], request_data):
+    if not adb.keys_exist(["collection", "auths"], request_data):
         emit("log", "Missing Arguments")
         return "0"
-    # check all authentications
-    users = adb.get_collection('users',  db=util.config['auth_db'])
-    auths = adb.escape_user_query(request_data['auths'])
-    # iterate supplied auths and emit if any of them fail
-    for pair in auths:
-        if not adb.auth(pair[0], pair[1]):
-            emit("log", "A supplied username was not found")
-            return "0"
-    # escape the where clause
-    if "where" in request_data:
-        request_data['where'] = atsui.escape_user_query(request_data['where'])
-    # send the user backlogs if requested
     if "backlog" in request_data and request_data["backlog"]:
         # get previously sent documents
         backlog = adb.get_documents(
             request_data['auths'],
             request_data["collection"],
-            time_order=True,
             where=request_data['where'] if "where" in request_data else False
         )
         # send each document separately
         for document in backlog:
-            # make sure it's a client document
-            if document["visible"]:
-                document_tidy = {
-                    "sender": document["sender"],
-                    "recipient": document["recipient"],
-                    "data": document["data"],
-                    "id": str(document["_id"]),
-                    "ts": document["ts"],
-                    "update": False
-                }
-                emit("data", document_tidy)
+            document_tidy = {
+                "sender": document["sender"],
+                "recipient": document["recipient"],
+                "data": document["data"],
+                "id": str(document["_id"]),
+                "update": False
+            }
+            print("emitting")
+            emit("data", document_tidy)
+            socketio.sleep(0)
     # add socket to dict of sockets to keep updated
     # (Choosing speed over memory here)
     # create a socket object to represent this connection
@@ -323,14 +302,22 @@ def emit_to_relevant_sockets(request_data, document):
         if not socket.connected:
             live_sockets[request_data['collection']].remove(socket)
             continue
+        query = {"$and": [
+            {"$or": [
+                {"sender": {"$in": socket.ids}},
+                {"recipient": {"$in": socket.ids}}
+            ]}
+        ]}
+        if socket.where:
+            query["$and"].append(socket.where)
         # if the listener is authenticated as the sender or the recipient
-        if mongoquery.Query({"$or": [{"sender": {"$in": socket.ids}},
-                                     {"recipient": {"$in": socket.ids}}
-                ]}).match(document):
-            # check user defined query
-            if mongoquery.Query(socket.where).match(document):
-                # document matches this users specifications. Send document
-                socket.emit("data", document)
+        print(query)
+        print(document)
+        if mongoquery.Query(query).match(document):
+            # document matches this users specifications. Send document
+            print("emitting")
+            socket.emit("data", document)
+
 
 # Object that represents a socket connection
 class Socket:
@@ -339,15 +326,15 @@ class Socket:
         self.query = query
         self.connected = True
         auths = query['auths']
-        self.ids = list(ObjectId(auth[0]) for auth in auths)
+        self.ids = list(auth[0] for auth in auths)
         self.where = query['where'] if "where" in query else False
 
     # Emits data to a socket's unique room
     def emit(self, event, data):
-        emit(event, data, room=self.sid)
+        emit(event, data, namespace="/socket", room=self.sid)
+        socketio.sleep(0)
 
 live_sockets = {}
 all_sockets = {}
 
-if __name__ == "__main__":
-    socket.run(app, "0.0.0.0", 8000, debug=True)
+socketio.run(app, "0.0.0.0", 8000, debug=True)

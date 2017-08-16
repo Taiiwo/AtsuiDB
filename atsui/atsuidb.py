@@ -38,7 +38,7 @@ class AtsuiDB:
             "is_admin": False,
             "username": username.lower(),
             "password_hash": password_hash,
-            "salt": salt_hex,
+            "salt": salt,
             "details": details,
             "session_salt": None,   # created on login
             "auths": [   # everyone joins the "Public" role
@@ -94,13 +94,13 @@ class AtsuiDB:
     # Sends a message
     def send(self, data, collection, sender_id, recipient_id, auths):
         # find the auth pair of the desired sender
-        sender = self.name_lookup(sender_id)
+        sender = self.get_by_handle(sender_id)
         sender_pair = False
         # process auth list, processing username <-> uid operations
         auths = self.escape_user_query(auths)
         # check that the sender can authenticate
         for auth in auths:
-            if auth[0] == str(sender["_id"]):
+            if auth[0] == self.get_auid(sender_id):
                 sender_pair = auth
         # if no authentication was found, disregard
         if not sender_pair:
@@ -110,20 +110,48 @@ class AtsuiDB:
         if not sender:# this should never happen
             raise errors.LoginRequired()
         # find recipient
-        recipient = self.name_lookup(recipient_id)
+        recipient = self.get_by_handle(recipient_id)
         if not recipient:
             raise errors.DataRequired()
 
         # create nice document
         document = {
-            "sender": sender_id,
-            "recipient": recipient_id,
+            "sender": self.get_auid(sender_id),
+            "recipient": self.get_auid(recipient_id),
             "data": data
         }
         # store document
         id = self.mongo["atsui"][collection].insert_one(document).inserted_id
         document["_id"] = id
         return document
+
+    def validate_auths(self, auths):
+        # process an escape the user query
+        auths = self.escape_user_query(auths)
+        # iterate supplied auths and emit if any of them fail
+        for pair in auths:
+            if not self.authenticate(pair[0], pair[1]):
+                emit("log", "A supplied username was not found")
+                return "0"
+        return auths
+
+    def get_documents(self, auths, collection, where=False):
+        # check all authentications
+        auths = self.validate_auths(auths)
+        query = {
+            "$and": [   # user has access to the document
+                {"$or": [   # User is either sender or recipient
+                    {"sender": {"$in": [auth[0] for auth in auths]}},
+                    {"recipient": {"$in": [auth[0] for auth in auths]}}
+                ]}
+            ]
+        }
+        # escape the where clause
+        if where:
+            where = self.escape_user_query(where)
+            query["$and"].append(where)
+
+        return self.mongo["atsui"][collection].find(query)
 
     # Creates a session token for a given user
     def create_session(self, user_data):
@@ -153,7 +181,7 @@ class AtsuiDB:
     def hash_password(self, password, salt, as_hex=True):
         hasher = sha512()
         hasher.update(password.encode("utf8"))
-        hasher.update(salt)
+        hasher.update(salt.encode("utf-8"))
         if as_hex:
             return hasher.hexdigest()
         else:
@@ -163,7 +191,7 @@ class AtsuiDB:
     def gen_salt(self, as_hex=True):
         salt = os.urandom(32)
         if as_hex:
-            return b2a_hex(salt)
+            return b2a_hex(salt).encode("utf-8")
         else:
             return salt
 
@@ -183,6 +211,34 @@ class AtsuiDB:
                 pass
         return safe_user
 
+    def get_by_auid(self, auid):
+        if auid[0] == "@":
+            return self.users.find_one({"_id": ObjectId(auid[1:])})
+        elif auid[0] == "#":
+            return self.datachests.find_one({"_id": ObjectId(auid[1:])})
+        return None
+
+    def get_by_handle(self, handle):
+        if handle[0] == "#":
+            user = self.datachests.find_one({"name": handle[1:]})
+        elif handle[0] == "@":
+            user = self.users.find_one({"username": handle[1:]})
+        else:
+            raise errors.DataInvalid("Name missing idetifier (@, #)")
+        if not user:
+            raise errors.UserNotFound()
+        return user
+
+    def get_handle(self, auid, user_data=False):
+        if not user_data:
+            user_data = self.get_by_auid(auid)
+        return auid[0] + user_data["username"]
+
+    def get_auid(self, handle, user_data=False):
+        if not user_data:
+            user_data = self.get_by_handle(handle)
+        return handle[0] + str(user_data["_id"])
+
     # Authenticates a user using a session token, id pair
     # Reads from cookies if available
     def authenticate(self, user_id=None, session=None, user_data=None):
@@ -194,7 +250,7 @@ class AtsuiDB:
                 raise errors.DataRequired()
 
         if not user_data:
-            user_data = self.users.find_one({'_id': ObjectId(user_id)})
+            user_data = self.get_by_auid(user_id)
 
         # check if the session is legit
         if not user_data:
@@ -221,22 +277,9 @@ class AtsuiDB:
         elif isinstance(query, dict):
             # look for special operations and replace them with operation output
             for key, value in query.items():
-                # convert name to uid
-                if key == "$uid_of":
-                    if value[0] == "#":
-                        target = self.datachests.find_one({"name": value[1:]})
-                    elif value[0] == "@":
-                        target = self.users.find_one({"username": value[1:]})
-                    else:
-                        raise errors.DataInvalid(
-                            "Username or datachest supplied without classifier"
-                        )
-                    if not target:
-                        raise errors.UserNotFound()
-                    return str(target["_id"])
-                # Converts a string based ObjectID to a ObjectID object
-                elif key == "$oid":
-                    return ObjectId(value)
+                # convert handle to uid
+                if key == "$auid_of":
+                    return self.get_auid(value)
                 elif key[0] == "$":
                     operation = key[1:]
                     if operation not in ["eq", "gt", "lt", "in", "and", "or"]:
@@ -244,14 +287,3 @@ class AtsuiDB:
                 else:
                     query[key] = self.escape_user_query(query[key])
         return query
-
-    def name_lookup(self, name):
-        if name[0] == "#":
-            user = self.datachests.find_one({"name": name[1:]})
-        elif name[0] == "@":
-            user = self.users.find_one({"username": name[1:]})
-        else:
-            raise errors.DataInvalid("Name missing idetifier (@, #)")
-        if not user:
-            raise errors.UserNotFound()
-        return user

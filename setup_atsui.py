@@ -1,6 +1,6 @@
-import atsuidb.atsuidb
+from atsui.atsuidb import AtsuiDB
 
-adb = atsuidb.atsuidb.AtsuiDB()
+adb = AtsuiDB()
 
 # Create public datachest
 adb.create_datachest("Public", "", {})
